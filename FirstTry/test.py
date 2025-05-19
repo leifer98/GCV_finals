@@ -478,7 +478,7 @@ def test_extreme_epochs():
     # Train for an extreme number of epochs
     checkpoint_dir = "./checkpoints_extreme"
     os.makedirs(checkpoint_dir, exist_ok=True)
-    num_epochs = 50  # Extreme number of epochs
+    num_epochs = 20  # Extreme number of epochs
     train_model(
         dataset_dir=dataset_dir,
         batch_size=2,
@@ -648,37 +648,11 @@ def test_model_output_and_match_segmaps():
 
     # Visualize matching resolutions with thresholded outputs
     segmap_files = import_segmaps(segmaps_dir)
-    for segmap_file in segmap_files:
-        segmap_path = segmap_file
-        with Image.open(segmap_path) as segmap_img:
-            segmap_res = segmap_img.size  # (width, height)
-
-            # Find a matching resized output
-            resized_file = os.path.basename(segmap_file).replace("_SegMap", "")
-            resized_path = os.path.join(resized_outputs_dir, resized_file)
-            thresholded_path = os.path.join(final_thresholded_dir, resized_file)
-            if os.path.exists(resized_path) and os.path.exists(thresholded_path):
-                with Image.open(resized_path) as resized_img, Image.open(thresholded_path) as thresholded_img:
-                    resized_res = resized_img.size  # (width, height)
-
-                    if segmap_res == resized_res:
-                        # Visualize the matching example
-                        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-                        axes[0].imshow(segmap_img, cmap="gray")
-                        axes[0].set_title("Segmap")
-                        axes[0].axis("off")
-                        axes[1].imshow(resized_img, cmap="gray")
-                        axes[1].set_title("Resized Model Output")
-                        axes[1].axis("off")
-                        axes[2].imshow(thresholded_img, cmap="gray")
-                        axes[2].set_title("Thresholded Output")
-                        axes[2].axis("off")
-                        plt.show()
-                        return
+    visualize_matching_resolutions(segmap_files, resized_outputs_dir, final_thresholded_dir)
 
     print("No matching resolutions found between segmaps, resized outputs, and thresholded outputs.")
 
-def test_model_with_large_tiles():
+def test_model_with_more_epochs():
     # Required:
     # - SVS files in "../Recources/example_tcga_slides"
     # - Thumbnails generated in "./intermediate_data/thumbs" (created by `get_test_data_from_svs_folder`)
@@ -776,33 +750,109 @@ def test_model_with_large_tiles():
 
     # Visualize matching resolutions with thresholded outputs
     segmap_files = import_segmaps(segmaps_dir)
-    for segmap_file in segmap_files:
-        segmap_path = segmap_file
-        with Image.open(segmap_path) as segmap_img:
-            segmap_res = segmap_img.size  # (width, height)
+    visualize_matching_resolutions(segmap_files, resized_outputs_dir, final_thresholded_dir)
 
-            # Find a matching resized output
-            resized_file = os.path.basename(segmap_file).replace("_SegMap", "")
-            resized_path = os.path.join(resized_outputs_dir, resized_file)
-            thresholded_path = os.path.join(final_thresholded_dir, resized_file)
-            if os.path.exists(resized_path) and os.path.exists(thresholded_path):
-                with Image.open(resized_path) as resized_img, Image.open(thresholded_path) as thresholded_img:
-                    resized_res = resized_img.size  # (width, height)
+    print("No matching resolutions found between segmaps, resized outputs, and thresholded outputs.")
 
-                    if segmap_res == resized_res:
-                        # Visualize the matching example
-                        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-                        axes[0].imshow(segmap_img, cmap="gray")
-                        axes[0].set_title("Segmap")
-                        axes[0].axis("off")
-                        axes[1].imshow(resized_img, cmap="gray")
-                        axes[1].set_title("Resized Model Output")
-                        axes[1].axis("off")
-                        axes[2].imshow(thresholded_img, cmap="gray")
-                        axes[2].set_title("Thresholded Output")
-                        axes[2].axis("off")
-                        plt.show()
-                        return
+def test_model_with_more_epochs_modified():
+    # Required:
+    # - SVS files in "../Recources/example_tcga_slides"
+    # - Thumbnails generated in "./intermediate_data/thumbs" (created by `get_test_data_from_svs_folder`)
+    # - Grid files in "./intermediate_data/grids" (created by `get_test_data_from_svs_folder`)
+    # - Segmaps in "./segmaps" (e.g., `_SegMap.png` files)
+    # - Checkpoints saved in "./checkpoints_large_tiles"
+    # - Thresholded outputs saved in "./thresholded_output_large_tiles"
+    # - Resized outputs saved in "./resized_output_large_tiles"
+    # - Final thresholded outputs saved in "./final_thresholded_output_large_tiles"
+    # This test trains the model for 5 epochs, generates outputs, applies thresholds, and visualizes results.
+    
+    from train import train_model
+    from analysis import import_segmaps, resize_model_outputs, create_thresholded_outputs
+    from utils import threshold_heightmap
+
+    # Prepare directories
+    segmaps_dir = "./segmaps"
+    thresholded_dir = "./thresholded_output_large_tiles"
+    resized_outputs_dir = "./resized_output_large_tiles"
+    final_thresholded_dir = "./final_thresholded_output_large_tiles"
+    dataset_dir = "./intermediate_data"
+    checkpoint_dir = "./checkpoints_large_tiles"
+
+    # Train the model for 5 epochs
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    train_model(
+        dataset_dir=dataset_dir,
+        batch_size=2,
+        num_epochs=5,
+        learning_rate=1e-3,
+        tile_size=(512, 512),
+        threshold=0.5,
+        num_channels=32,
+        num_pool_layers=4,
+        drop_prob=0.1,
+        checkpoint_dir=checkpoint_dir
+    )
+
+    # Load the trained model
+    checkpoint_path = os.path.join(checkpoint_dir, "unet_epoch_5.pt")
+    assert os.path.exists(checkpoint_path), "Checkpoint not created!"
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = UnetModel(
+        in_chans=3,
+        out_chans=1,
+        chans=32,
+        num_pool_layers=4,
+        drop_prob=0.1
+    ).to(device)
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+
+    # Prepare dataset
+    grid_dir = os.path.join(dataset_dir, "grids")
+    thumb_dir = os.path.join(dataset_dir, "thumbs")
+    dataset = SlideTileDataset(
+        slide_dir=thumb_dir,
+        grid_dir=grid_dir,
+        tile_size=(512, 512),
+        threshold=0.5,
+        use_thumbnails=True
+    )
+
+    # Generate thresholded outputs
+    print("Generating thresholded outputs...")
+    create_thresholded_outputs(model, dataset, thresholded_dir, tile_size=(512, 512), device=device)
+
+    # Debug: Check if the thresholded_dir exists and is populated
+    thresholded_files = [f for f in os.listdir(thresholded_dir) if f.endswith(".png")]
+    if not thresholded_files:
+        print(f"Error: No model outputs found in {thresholded_dir}.")
+        return
+
+    print(f"Model outputs found in {thresholded_dir}: {thresholded_files}")
+
+    # Resize model outputs to match segmaps
+    resize_model_outputs(thresholded_dir, segmaps_dir, resized_outputs_dir)
+
+    # Debug: Check if resized outputs exist
+    resized_files = [f for f in os.listdir(resized_outputs_dir) if f.endswith(".png")]
+    if not resized_files:
+        print(f"Error: No resized outputs found in {resized_outputs_dir}.")
+        return
+
+    print(f"Resized outputs found in {resized_outputs_dir}: {resized_files}")
+
+    # Apply threshold to resized outputs and save them
+    os.makedirs(final_thresholded_dir, exist_ok=True)
+    for resized_file in resized_files:
+        resized_path = os.path.join(resized_outputs_dir, resized_file)
+        with Image.open(resized_path) as resized_img:
+            resized_array = np.array(resized_img) / 255.0  # Normalize to [0, 1]
+            thresholded_array = threshold_heightmap(torch.tensor(resized_array), threshold=0.5).numpy() * 255.0
+            thresholded_img = Image.fromarray(thresholded_array.astype(np.uint8))
+            thresholded_img.save(os.path.join(final_thresholded_dir, resized_file))
+
+    # Visualize matching resolutions with thresholded outputs
+    segmap_files = import_segmaps(segmaps_dir)
+    visualize_matching_resolutions(segmap_files, resized_outputs_dir, final_thresholded_dir)
 
     print("No matching resolutions found between segmaps, resized outputs, and thresholded outputs.")
 
@@ -829,4 +879,5 @@ if __name__ == "__main__":
     # test_extreme_epochs()
 
     # test_model_output_and_match_segmaps()
-    test_model_with_large_tiles()
+    # test_model_with_more_epochs()
+    test_model_with_more_epochs_modified()

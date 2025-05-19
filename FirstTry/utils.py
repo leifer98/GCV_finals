@@ -372,7 +372,7 @@ def _make_grid_for_image(file, meta_data_DF, ROOT_DIR,
     slide.close()
     return len(tiles), len(all_tiles)
 
-def resize_tile(tile: np.ndarray, target_size=(256, 256)) -> np.ndarray:
+def resize_tile(tile: np.ndarray, target_size=(512, 512)) -> np.ndarray:
     """
     Resize a tile to the target size using OpenCV.
 
@@ -383,7 +383,10 @@ def resize_tile(tile: np.ndarray, target_size=(256, 256)) -> np.ndarray:
     Returns:
         np.ndarray: Resized tile.
     """
-    return cv.resize(tile, target_size, interpolation=cv.INTER_AREA)
+    print(f"Resizing tile from shape {tile.shape} to target size {target_size}")
+    resized_tile = cv.resize(tile, target_size, interpolation=cv.INTER_AREA)
+    print(f"Resized tile shape: {resized_tile.shape}")
+    return resized_tile
 
 def visualize_model_output(checkpoint_path, input_image, tile_size=(256, 256), device=None):
     """
@@ -467,6 +470,61 @@ def check_and_visualize_segmaps(segmaps_dir, selected_file=None):
         plt.imshow(img)
         plt.axis("off")
         plt.show()
+
+def visualize_matching_resolutions(segmap_files, resized_outputs_dir, final_thresholded_dir, thumbnails_dir):
+    """
+    Visualize matching resolutions between segmaps, resized outputs, thresholded outputs, and the original thumbnail.
+
+    Args:
+        segmap_files (list): List of segmap file paths.
+        resized_outputs_dir (str): Directory containing resized model outputs.
+        final_thresholded_dir (str): Directory containing final thresholded outputs.
+        thumbnails_dir (str): Directory containing the original thumbnails.
+    """
+    found_match = False  # Track if any matching resolutions are found
+
+    for segmap_file in segmap_files:
+        segmap_path = segmap_file
+        with Image.open(segmap_path) as segmap_img:
+            segmap_res = segmap_img.size  # (width, height)
+
+            # Find a matching resized output
+            base_name = os.path.basename(segmap_file).replace("_SegMap", "")
+            resized_path = os.path.join(resized_outputs_dir, base_name)
+            thresholded_path = os.path.join(final_thresholded_dir, base_name)
+            thumbnail_path = os.path.join(thumbnails_dir, base_name)
+
+            if os.path.exists(resized_path) and os.path.exists(thresholded_path) and os.path.exists(thumbnail_path):
+                with Image.open(resized_path) as resized_img, \
+                     Image.open(thresholded_path) as thresholded_img, \
+                     Image.open(thumbnail_path) as thumbnail_img:
+
+                    resized_res = resized_img.size  # (width, height)
+
+                    if segmap_res == resized_res:
+                        # Resize the thumbnail to match the dimensions of the other images
+                        thumbnail_resized = thumbnail_img.resize(segmap_res, Image.ANTIALIAS)
+
+                        # Visualize the matching example
+                        fig, axes = plt.subplots(1, 4, figsize=(24, 6))
+                        axes[0].imshow(thumbnail_resized)
+                        axes[0].set_title("Original Thumbnail")
+                        axes[0].axis("off")
+                        axes[1].imshow(segmap_img, cmap="gray")
+                        axes[1].set_title("Segmap")
+                        axes[1].axis("off")
+                        axes[2].imshow(resized_img, cmap="gray")
+                        axes[2].set_title("Resized Model Output")
+                        axes[2].axis("off")
+                        axes[3].imshow(thresholded_img, cmap="gray")
+                        axes[3].set_title("Thresholded Output")
+                        axes[3].axis("off")
+                        plt.show()
+                        found_match = True
+                        return
+
+    if not found_match:
+        print("No matching resolutions found between segmaps, resized outputs, and thresholded outputs.")
 
 
 

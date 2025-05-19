@@ -9,7 +9,7 @@ import openslide
 from utils import *
 
 class SlideTileDataset(Dataset):
-    def __init__(self, slide_dir, grid_dir, tile_size=(256, 256), threshold=0.5, use_thumbnails=False):
+    def __init__(self, slide_dir, grid_dir, tile_size=(512, 512), threshold=0.5, use_thumbnails=False):
         """
         Initialize the dataset with slide and grid directories.
 
@@ -20,6 +20,7 @@ class SlideTileDataset(Dataset):
             threshold (float): Threshold for heightmap processing.
             use_thumbnails (bool): Whether to use thumbnails instead of full SVS files
         """
+        print(f"Initializing SlideTileDataset with tile_size={tile_size}, threshold={threshold}, use_thumbnails={use_thumbnails}")
         self.slide_dir = slide_dir
         self.grid_dir = grid_dir
         self.tile_size = tile_size
@@ -55,6 +56,7 @@ class SlideTileDataset(Dataset):
         Returns:
             dict: A dictionary containing the resized tile, thresholded heightmap, and other metadata.
         """
+        print(f"Fetching item at index {idx}")
         slide_path = self.slides[idx]
         # Use idx % len(self.grids) in case there are more slides than grids
         grid_path = self.grids[idx % len(self.grids)]
@@ -87,6 +89,7 @@ class SlideTileDataset(Dataset):
         heightmap = torch.rand(1, 1, *self.tile_size)
         thresholded_heightmap = threshold_heightmap(heightmap, threshold=self.threshold)
 
+        print(f"Resized tile shape: {resized_tile.shape}, Thresholded heightmap shape: {thresholded_heightmap.shape}")
         return {
             "resized_tile": resized_tile,
             "thresholded_heightmap": thresholded_heightmap,

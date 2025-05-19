@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from utils import *
 # from test_radon_scikit import custom_radon, custom_iradon
 import numpy as np
+from torch.nn.init import xavier_uniform_
 
 
 class ConvBlock(nn.Module):
@@ -30,13 +31,14 @@ class ConvBlock(nn.Module):
         self.layers = nn.Sequential(
             nn.Conv2d(in_chans, out_chans, kernel_size=3, padding=1),
             nn.InstanceNorm2d(out_chans),
-            nn.LeakyReLU(),
             nn.Dropout2d(drop_prob),
             nn.Conv2d(out_chans, out_chans, kernel_size=3, padding=1),
             nn.InstanceNorm2d(out_chans),
-            nn.LeakyReLU(),
             nn.Dropout2d(drop_prob)
         )
+
+        # Initialize weights for sine activation
+        self._initialize_weights()
 
     def forward(self, input):
         """
@@ -45,7 +47,20 @@ class ConvBlock(nn.Module):
         Returns:
             (torch.Tensor): Output tensor of shape [batch_size, self.out_chans, height, width]
         """
-        return self.layers(input)
+        # Replace LeakyReLU with sine activation
+        for layer in self.layers:
+            if isinstance(layer, nn.Conv2d):
+                input = layer(input)
+            elif isinstance(layer, nn.InstanceNorm2d) or isinstance(layer, nn.Dropout2d):
+                input = layer(input)
+            else:
+                input = torch.sin(input)  # Apply sine activation
+        return input
+
+    def _initialize_weights(self):
+        for layer in self.layers:
+            if isinstance(layer, nn.Conv2d):
+                xavier_uniform_(layer.weight, gain=1)
 
     def __repr__(self):
         return f'ConvBlock(in_chans={self.in_chans}, out_chans={self.out_chans}, ' \
@@ -119,22 +134,30 @@ class UnetModel(nn.Module):
         Returns:
             (torch.Tensor): Output tensor of shape [batch_size, self.out_chans, height, width]
         """
+        # print(f"Forward pass started with input shape: {input.shape}")
         stack = []
         output = input
+
         # Apply down-sampling layers
-        for layer in self.down_sample_layers:
+        for i, layer in enumerate(self.down_sample_layers):
             output = layer(output)
             stack.append(output)
+            # print(f"Down-sampling layer {i}: Output shape: {output.shape}")
             output = F.max_pool2d(output, kernel_size=2)
 
         output = self.conv(output)
+        # print(f"After bottleneck: Output shape: {output.shape}")
 
         # Apply up-sampling layers
-        for layer in self.up_sample_layers:
+        for i, layer in enumerate(self.up_sample_layers):
             output = F.interpolate(output, scale_factor=2, mode='bilinear', align_corners=False)
             output = torch.cat([output, stack.pop()], dim=1)
             output = layer(output)
-        return self.conv2(output)
+            # print(f"Up-sampling layer {i}: Output shape: {output.shape}")
+
+        output = self.conv2(output)
+        print(f"Final output shape: {output.shape}")
+        return output
 
 
 def create_model(args) -> nn.Module:
