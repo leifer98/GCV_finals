@@ -1,28 +1,37 @@
 import os
 import numpy as np
-from skimage import io
-from scipy.ndimage import distance_transform_edt
+import skimage.io as io
 import matplotlib.pyplot as plt
-import cv2  # Importing cv2 for image resizing
 from scipy.ndimage import gaussian_filter
+import cv2  # Importing cv2 for image resizing
+from scipy.ndimage import distance_transform_edt  # Correct import for SDF computation
+
 
 def compute_sdf(binary_img, debug=False):
     """
-    Computes the Signed Distance Function (SDF) for a binary image.
-    Positive values are outside the object, negative values are inside.
+    Compute the Signed Distance Field (SDF) from a binary image using distance_transform_edt.
+    Positive values inside the object, negative outside.
     """
+    # Ensure binary image is 0s and 1s
+    binary_img = (binary_img > 0).astype(np.uint8)
+    
+    # Compute unsigned distance transform
+    dist_inside = distance_transform_edt(binary_img)
+    dist_outside = distance_transform_edt(1 - binary_img)
+    
+    # Assign signs: positive inside, negative outside
+    sdf = dist_inside * binary_img - dist_outside * (1 - binary_img)
+    
     if debug:
-        print("Computing SDF for binary image...")
-    binary_img = (binary_img > 0).astype(np.uint8)  # Ensure binary format
-    outside_dist = distance_transform_edt(1 - binary_img)  # Distance to background
-    inside_dist = distance_transform_edt(binary_img)      # Distance to foreground
-    sdf = outside_dist - inside_dist                      # Signed distance
-    return sdf
+        print("SDF computed with shape:", sdf.shape)
+        print("Min SDF value:", sdf.min(), "Max SDF value:", sdf.max())
+    
+    return (sdf - 1)
 
 def save_sdf(input_dir, output_dir, debug=False):
     """
     Processes all binary images in the input directory, computes the SDF,
-    and saves the results as .npy files in the output directory.
+    normalizes it, and saves the results as .npy files in the output directory.
     """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -32,14 +41,16 @@ def save_sdf(input_dir, output_dir, debug=False):
             path = os.path.join(input_dir, filename)
             binary_img = io.imread(path, as_gray=True)
             sdf = compute_sdf(binary_img, debug=debug)
+            
+            
             output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.npy")
             np.save(output_path, sdf)
             if debug:
-                print(f"Saved SDF to {output_path}")
+                print(f"Saved normalized SDF to {output_path}")
 
 def save_visualize_sdf(input_dir, sdf_dir, output_dir, debug=False):
     """
-    Saves visualizations of the SDF by overlaying it on the original binary images
+    Saves visualizations of the normalized SDF by overlaying it on the original binary images
     and saves the visualizations as .png files in the output directory.
     """
     if not os.path.exists(output_dir):
@@ -49,14 +60,21 @@ def save_visualize_sdf(input_dir, sdf_dir, output_dir, debug=False):
         if filename.endswith(".npy"):
             sdf_path = os.path.join(sdf_dir, filename)
             sdf = np.load(sdf_path)
+            
+            # Normalize SDF: map 0 to 0.5, negatives to [0, 0.5), positives to (0.5, 1]
+            sdf_normalized = np.where(
+                sdf < 0,
+                0.5 + (sdf / (-2 * sdf.min())),  # Map negatives to [0, 0.5)
+                0.5 + (sdf / (2 * sdf.max()))   # Map positives to (0.5, 1]
+            )
+            
             binary_path = os.path.join(input_dir, f"{os.path.splitext(filename)[0]}.png")
             binary_img = io.imread(binary_path, as_gray=True)
+            binary_img = (binary_img > 0).astype(np.uint8)
 
             plt.figure(figsize=(4, 4))
             plt.imshow(binary_img, cmap='gray', alpha=0.5)
-            plt.contour(sdf, levels=20, cmap='coolwarm', linewidths=1)
-            # plt.colorbar(label="Signed Distance")
-            # plt.title(f"SDF Visualization: {filename}")
+            plt.imshow(sdf_normalized, cmap='coolwarm', alpha=0.5)  # Overlay normalized SDF
             plt.axis('off')
 
             output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.png")
@@ -115,7 +133,13 @@ def visualize_sdf_comparison(input_dir, visualization_dir, debug=False):
             axs[i, 0].set_title(f"Original: {title}", fontsize=10)
             axs[i, 0].axis('off')
 
-            axs[i, 1].imshow(visualization)
+            # Ensure visualization is 2D and normalize for better contrast
+            if visualization.ndim == 3:
+                visualization = visualization[:, :, 0]  # Take the first channel if 3D
+            visualization = (visualization - visualization.min()) / (visualization.max() - visualization.min())  # Normalize to [0, 1]
+
+            # Smooth visualization with filled contours and clear positive/negative differentiation
+            axs[i, 1].imshow(visualization, cmap='coolwarm', alpha=0.8)
             axs[i, 1].set_title(f"Visualization: {title}", fontsize=10)
             axs[i, 1].axis('off')
 

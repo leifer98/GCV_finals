@@ -4,6 +4,7 @@ import torch
 from scipy.ndimage import gaussian_filter
 from skimage import io
 import torch.nn.functional as F
+import matplotlib.pyplot as plt  # Add this import for visualization
 
 def soft_normalize_sdf(sdf, shift=0.1, scale=0.9):
     """
@@ -16,154 +17,68 @@ def soft_normalize_sdf(sdf, shift=0.1, scale=0.9):
     sdf = 2 * sdf - 1  # Scale to [-1, 1]
     return sdf
 
-def firstTerm(sdf_pred, debug=False):
+def compute_sdf_loss(model_output, gt_sdf, alpha=100.0, epsilon=1e-3, debug=False, filename="output"):
     """
-    Compute the first term: ||∇Φ(x)| - 1|| over the domain Ω.
+    Implementation of SDF loss.
+
+    Parameters:
+    - model_output: Predicted SDF values from the model.
+    - gt_sdf: Ground truth SDF values.
+    - alpha: Weighting factor for the off-surface penalty term.
+    - epsilon: Threshold for surface mask.
+    - debug: If True, print the first, second, and third term results.
+    - filename: Name of the file being processed, used for saving outputs.
     """
-    if debug:
-        print("Computing First Term (Eikonal)...")
-    # Generate spatial coordinates
-    batch_size, _, height, width = sdf_pred.shape
-    y_coords, x_coords = torch.meshgrid(
-        torch.linspace(-1, 1, height, device=sdf_pred.device),
-        torch.linspace(-1, 1, width, device=sdf_pred.device),
-        indexing="ij"
-    )
-    coords = torch.stack((x_coords, y_coords), dim=-1).unsqueeze(0).repeat(batch_size, 1, 1, 1, 1)  # Shape: [B, H, W, 2]
+    # Compute surface mask
+    surface_mask = (torch.abs(gt_sdf) < epsilon).float()
+    
+    print("surface mask shape", surface_mask.shape)
+    print(f"surface mask max {surface_mask.max()}, surface mask min {surface_mask.min()}, surface mask mean {surface_mask.mean()}")
+    print(f"number of zeros in gt_sdf: {torch.numel(gt_sdf)-torch.count_nonzero(gt_sdf)}")
+    print(f"abs gt_sdf min: {torch.abs(gt_sdf).min()}, abs gt_sdf max: {torch.abs(gt_sdf).max()}")
 
-    # Compute gradients of sdf_pred w.r.t. spatial coordinates
-    try:
-        gradients = torch.autograd.grad(
-            outputs=sdf_pred,
-            inputs=coords,
-            grad_outputs=torch.ones_like(sdf_pred),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True
-        )[0]  # Shape: [B, H, W, 2]
-    except Exception as e:
-        if debug:
-            print(f"Error in gradient computation for First Term: {e}")
-        return torch.tensor(0.0, device=sdf_pred.device)
+    # Save the surface mask
+    surface_masks_dir = os.path.join("..", "intermediate_data", "loss_surface_masks")
+    save_surface_mask(surface_mask, surface_masks_dir, filename=f"{filename}.png")
 
-    grad_norm = torch.norm(gradients, dim=-1)  # Compute gradient norm along spatial dimensions
-    eikonal_loss = F.l1_loss(grad_norm, torch.ones_like(grad_norm))  # L1 loss to enforce norm = 1
-
-    if debug:
-        print(f"First Term (Eikonal Loss): {eikonal_loss.item()}")
-
-    return eikonal_loss
-
-def secondTerm(sdf_pred, sdf_gt, epsilon=1e-3, debug=False):
-    """
-    Compute the second term: |Φ(x)| + (1 - ⟨∇Φ(x), n(x)⟩) over the zero-level set Ω₀.
-    """
-    if debug:
-        print("Computing Second Term (Surface)...")
-
-    # Identify surface points where |sdf_gt| < epsilon
-    surface_mask = torch.abs(sdf_gt) < epsilon
-
-    # Enforce |sdf_pred| ≈ 0 on surface points
-    sdf_loss = torch.abs(sdf_pred[surface_mask]).mean()
-
-    # Compute gradients of sdf_pred and sdf_gt
-    gradients_pred = torch.autograd.grad(
-        outputs=sdf_pred,
-        inputs=sdf_pred,
-        grad_outputs=torch.ones_like(sdf_pred),
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True
-    )[0]
-    gradients_gt = torch.autograd.grad(
-        outputs=sdf_gt,
-        inputs=sdf_gt,
-        grad_outputs=torch.ones_like(sdf_gt),
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True
-    )[0]
-
-    # Normalize gradients to compute normals
-    normals_gt = F.normalize(gradients_gt[surface_mask], dim=1)
-    normals_pred = F.normalize(gradients_pred[surface_mask], dim=1)
-
-    # Compute cosine similarity loss
-    cosine_loss = 1 - (normals_pred * normals_gt).sum(dim=1).mean()
-
-    # Combine losses
-    surface_loss = sdf_loss + cosine_loss
-
-    if debug:
-        print(f"Second Term (Surface Loss): {surface_loss.item()}")
-
-    return surface_loss
-
-def thirdTerm(sdf_pred, sdf_gt, alpha=100.0, epsilon=1e-3, debug=False):
-    """
-    Compute the third term: ψ(Φ(x)) = exp(-α * |Φ(x)|) over the off-surface region Ω \ Ω₀.
-    """
-    if debug:
-        print("Computing Third Term (Off-Surface)...")
-
-    # Identify off-surface points where |sdf_gt| >= epsilon
-    off_surface_mask = torch.abs(sdf_gt) >= epsilon
-
-    # Compute exponential penalty for off-surface points
-    psi = torch.exp(-alpha * torch.abs(sdf_pred[off_surface_mask]))
-    off_surface_loss = psi.mean()
-
-    if debug:
-        print(f"Third Term (Off-Surface Loss): {off_surface_loss.item()}")
-
-    return off_surface_loss
-
-def compute_sdf_loss_old(pred, normals, mask, alpha=100.0):
-    """
-    Old implementation of SDF loss.
-    """
-    grad_x = torch.gradient(pred, dim=(2, 3))
+    # Compute spatial gradients of the predicted SDF
+    grad_x = torch.gradient(model_output, dim=(2, 3))
     grad = torch.cat(grad_x, dim=1)
     grad_norm = torch.norm(grad, dim=1, keepdim=True)
-    eikonal_term = F.l1_loss(grad_norm, torch.ones_like(grad_norm), reduction='none')
-    abs_phi = torch.abs(pred)
-    angle_term = 1 - F.cosine_similarity(grad, normals, dim=1, eps=1e-6).unsqueeze(1)
+    normal_dir = os.path.join("..", "intermediate_data", "loss_normals")
+    save_model_output_norm(grad_norm, normal_dir, filename=f"{filename}.png")
+
+    # Eikonal term: Enforce ||∇Φ(x)| - 1|| ≈ 0
+    eikonal_term = F.l1_loss(grad_norm, torch.ones_like(grad_norm), reduction='none').mean()
+
+    # Absolute SDF values for surface points
+    abs_phi = torch.abs(model_output)
+
+    # Compute gradients of gt_sdf to get ground truth normals
+    grad_gt_x = torch.gradient(gt_sdf, dim=(2, 3))
+    grad_gt = torch.cat(grad_gt_x, dim=1)
+    normals_gt = F.normalize(grad_gt, dim=1)
+
+    # Normalize predicted gradients to compute predicted normals
+    normals_pred = F.normalize(grad, dim=1)
+
+    # Angle term: Enforce alignment between predicted and ground truth normals
+    angle_term = 1 - F.cosine_similarity(normals_pred, normals_gt, dim=1, eps=1e-6).unsqueeze(1)
+    surface_loss = (abs_phi * surface_mask + angle_term * surface_mask).mean()
+
+    # Off-surface penalty: Exponential decay based on SDF magnitude
     psi = torch.exp(-alpha * abs_phi)
-    on_surface = mask
-    off_surface = 1.0 - mask
-    loss_on = abs_phi * on_surface + angle_term * on_surface
-    loss_off = psi * off_surface
-    return eikonal_term.mean() + loss_on.mean() + loss_off.mean()
+    off_surface_loss = (psi * (1.0 - surface_mask)).mean()
 
-def sdf_loss(sdf_pred, sdf_gt, alpha=100.0, epsilon=1e-3, debug=False, use_old=False):
-    """
-    Compute the total SDF loss.
-    If `use_old` is True, use the old implementation of SDF loss.
-    """
-    if use_old:
-        if debug:
-            print("Using old SDF loss implementation...")
-        # Prepare inputs for the old function
-        mask = (torch.abs(sdf_gt) < epsilon).float()  # Surface mask
-        normals = torch.autograd.grad(
-            outputs=sdf_gt,
-            inputs=sdf_gt,
-            grad_outputs=torch.ones_like(sdf_gt),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True
-        )[0]
-        return compute_sdf_loss_old(sdf_pred, normals, mask, alpha)
+    # Combine all terms into the final loss
+    total_loss = eikonal_term + surface_loss + off_surface_loss
 
     if debug:
-        print("Using new SDF loss implementation...")
-    first = firstTerm(sdf_pred, debug=debug)
-    second = secondTerm(sdf_pred, sdf_gt, epsilon, debug=debug)
-    third = thirdTerm(sdf_pred, sdf_gt, alpha, epsilon, debug=debug)
-    total_loss = first + second + third
-    if debug:
-        print(f"Total SDF Loss: {total_loss.item()}")
+        print(f"First Term (Eikonal Loss): {eikonal_term.item()}")
+        print(f"Second Term (Surface Loss): {surface_loss.item()}")
+        print(f"Third Term (Off-Surface Loss): {off_surface_loss.item()}")
+        print(f"Total Loss: {total_loss.item()}")
+
     return total_loss
 
 def normalize_and_smooth_segmap(segmap, sigma=2):
@@ -197,45 +112,49 @@ def preprocess_segmaps(input_dir, output_dir, sigma=2, debug=False):
             if debug:
                 print(f"Processed and saved: {output_path}")
 
-def analyze_test(sdf_dir, processed_segmaps_dir, sigma=2, alpha=100.0, debug=False, use_old=False):
+def analyze_test(model_output_dir, gt_sdf_dir, sigma=2, alpha=100.0, debug=False):
     """
-    Preprocess segmentation maps, compute the loss between them and SDFs, and print results.
+    Compute the loss between model output and ground truth SDFs and print results.
+
+    Parameters:
+    - model_output_dir: Directory containing the model output SDFs.
+    - gt_sdf_dir: Directory containing the ground truth SDFs.
+    - sigma: Smoothing factor for preprocessing (if needed).
+    - alpha: Weighting factor for the off-surface penalty term.
+    - debug: If True, print debug information.
     """
-    # Compute loss between processed segmentation maps and SDFs
     total_loss = 0
     count = 0
 
-    for filename in os.listdir(sdf_dir):
+    for filename in os.listdir(gt_sdf_dir):
         if filename.endswith(".npy"):
-            sdf_path = os.path.join(sdf_dir, filename)
-            segmap_path = os.path.join(sdf_dir, filename)  # Use the same SDF directory for model output
+            gt_sdf_path = os.path.join(gt_sdf_dir, filename)
+            model_output_path = os.path.join(model_output_dir, filename)
 
-            if not os.path.exists(segmap_path):
+            if not os.path.exists(model_output_path):
                 if debug:
-                    print(f"Segmentation map not found for {filename}. Skipping.")
+                    print(f"Model output not found for {filename}. Skipping.")
                 continue
 
-            sdf_gt = np.load(sdf_path)
-            sdf_pred = np.load(segmap_path)
+            try:  # Add the missing try block
+                gt_sdf = np.load(gt_sdf_path)
+                model_output = np.load(model_output_path)
 
-            # Apply soft normalization to the predicted SDF
-            sdf_pred = soft_normalize_sdf(sdf_pred)
+                # Apply soft normalization to the model output
+                model_output = soft_normalize_sdf(model_output)
 
-            if debug:
-                print(f"Loaded SDF GT: {sdf_path}, SDF Pred: {segmap_path}")
-                print(f"SDF GT shape: {sdf_gt.shape}, SDF Pred shape: {sdf_pred.shape}")
 
-            # Convert to PyTorch tensors and ensure they require gradients
-            sdf_gt_tensor = torch.tensor(sdf_gt, dtype=torch.float32, requires_grad=True).unsqueeze(0).unsqueeze(0)
-            sdf_pred_tensor = torch.tensor(sdf_pred, dtype=torch.float32, requires_grad=True).unsqueeze(0).unsqueeze(0)
+                # Convert to PyTorch tensors and ensure they require gradients
+                gt_sdf_tensor = torch.tensor(gt_sdf, dtype=torch.float32, requires_grad=True).unsqueeze(0).unsqueeze(0)
+                model_output_tensor = torch.tensor(model_output, dtype=torch.float32, requires_grad=True).unsqueeze(0).unsqueeze(0)
 
-            if debug:
-                print(f"sdf_gt_tensor shape: {sdf_gt_tensor.shape}, requires_grad: {sdf_gt_tensor.requires_grad}")
-                print(f"sdf_pred_tensor shape: {sdf_pred_tensor.shape}, requires_grad: {sdf_pred_tensor.requires_grad}")
-
-            # Compute loss
-            try:
-                loss = sdf_loss(sdf_pred_tensor, sdf_gt_tensor, alpha=alpha, debug=debug, use_old=use_old)
+                if debug:
+                    print(f"Loaded GT SDF: {gt_sdf_path}, Model Output: {model_output_path}")
+                    print(f"GT SDF shape: {gt_sdf_tensor.shape}, Model Output shape: {model_output_tensor.shape}")
+                    print(f"GT SDF min ; max: {gt_sdf_tensor.min()}, {gt_sdf_tensor.max()}, Model Output min ; max: {model_output_tensor.min()}, {model_output_tensor.max()}")
+                
+                # Compute loss
+                loss = compute_sdf_loss(model_output_tensor, gt_sdf_tensor, alpha=alpha, debug=debug, filename=os.path.splitext(filename)[0])
                 if loss.item() == 0:
                     if debug:
                         print(f"Warning: Loss is zero for {filename}.")
@@ -244,18 +163,123 @@ def analyze_test(sdf_dir, processed_segmaps_dir, sigma=2, alpha=100.0, debug=Fal
 
                 if debug:
                     print(f"Loss for {filename}: {loss.item()}")
-            except Exception as e:
+            except Exception as e:  # Correctly pair the except block
                 print(f"Error computing loss for {filename}: {e}")
+                raise e
 
     average_loss = total_loss / count if count > 0 else 0
     print(f"Average Loss: {average_loss}")
     return average_loss
 
+def save_surface_mask(surface_mask, output_dir, filename="surface_mask.png"):
+    """
+    Save the surface mask as a PNG file in the specified output directory.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    output_path = os.path.join(output_dir, filename)
+    surface_mask_np = surface_mask.cpu().numpy().squeeze()  # Convert to NumPy array
+    plt.imsave(output_path, surface_mask_np, cmap='gray')
+    print(f"Surface mask saved to {output_path}")
+
+def save_model_output_norm(grad_norm, output_dir, filename="grad_norm.png"):
+    """
+    Save the gradient norm of the model output as a PNG file in the specified output directory.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Ensure grad_norm is a valid tensor
+    if not isinstance(grad_norm, torch.Tensor):
+        raise ValueError("grad_norm must be a torch.Tensor")
+    
+    # Convert to NumPy array and ensure it is squeezed to 2D
+    grad_norm_np = grad_norm.detach().cpu().numpy().squeeze()
+    if grad_norm_np.ndim != 2:
+        raise ValueError("grad_norm must be squeezable to a 2D array for saving as an image")
+    
+    # Save the gradient norm as a PNG file
+    output_path = os.path.join(output_dir, filename)
+    plt.imsave(output_path, grad_norm_np, cmap='viridis')
+    print(f"Gradient norm saved to {output_path}")
+
+def visualize_comparisons(model_output_dir, gt_sdf_dir, surface_masks_dir, normal_masks_dir, debug=False):
+    """
+    Visualize comparisons of model output, ground truth SDF, surface masks, and normal masks.
+    Split the 11 comparisons into 3 separate windows.
+    """
+    filenames = [f for f in os.listdir(model_output_dir) if f.endswith(".npy")]
+    filenames = sorted(filenames)[:11]  # Ensure we only process up to 11 files
+
+    if debug:
+        print(f"Visualizing comparisons for {len(filenames)} files...")
+
+    # Split filenames into 3 groups for separate windows
+    groups = [filenames[:4], filenames[4:8], filenames[8:11]]
+
+    for group_index, group in enumerate(groups):
+        if debug:
+            print(f"Visualizing group {group_index + 1} with {len(group)} images...")
+
+        num_images = len(group)
+        fig, axs = plt.subplots(num_images, 4, figsize=(16, num_images * 4))
+
+        for i, filename in enumerate(group):
+            base_name = os.path.splitext(filename)[0]
+
+            # Load images
+            model_output = np.load(os.path.join(model_output_dir, filename))
+            gt_sdf = np.load(os.path.join(gt_sdf_dir, filename))
+            surface_mask_path = os.path.join(surface_masks_dir, f"{base_name}.png")
+            normal_mask_path = os.path.join(normal_masks_dir, f"{base_name}.png")
+
+            surface_mask = plt.imread(surface_mask_path) if os.path.exists(surface_mask_path) else None
+            normal_mask = plt.imread(normal_mask_path) if os.path.exists(normal_mask_path) else None
+
+            # Plot model output
+            axs[i, 0].imshow(model_output, cmap='viridis')
+            axs[i, 0].set_title(f"Model Output: {base_name.split('.')[0]}", fontsize=10)
+            axs[i, 0].axis('off')
+
+            # Plot ground truth SDF
+            axs[i, 1].imshow(gt_sdf, cmap='viridis')
+            axs[i, 1].set_title("Ground Truth SDF", fontsize=10)
+            axs[i, 1].axis('off')
+
+            # Plot surface mask
+            if surface_mask is not None:
+                axs[i, 2].imshow(surface_mask, cmap='gray')
+                axs[i, 2].set_title("Surface Mask", fontsize=10)
+            else:
+                axs[i, 2].text(0.5, 0.5, "Missing", ha='center', va='center', fontsize=12)
+            axs[i, 2].axis('off')
+
+            # Plot normal mask
+            if normal_mask is not None:
+                axs[i, 3].imshow(normal_mask, cmap='viridis')
+                axs[i, 3].set_title("Normal", fontsize=10)
+            else:
+                axs[i, 3].text(0.5, 0.5, "Missing", ha='center', va='center', fontsize=12)
+            axs[i, 3].axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
 if __name__ == "__main__":
     # Paths
-    sdf_dir = os.path.join("..", "intermediate_data", "sdf_euclidean")
-    processed_segmaps_dir = os.path.join("..", "intermediate_data", "segmaps_normalized")
+    model_output = os.path.join("..", "intermediate_data", "sdf_euclidean")
+    gt_sdf = os.path.join("..", "intermediate_data", "sdf_euclidean")
+    surface_masks_dir = os.path.join("..", "intermediate_data", "loss_surface_masks")
+    normal_dir = os.path.join("..", "intermediate_data", "loss_normals")
+
 
     # Run the analyze test with the old SDF loss implementation
     alpha = 100.0  # Pass alpha as a parameter
-    analyze_test(sdf_dir, processed_segmaps_dir, sigma=2, alpha=alpha, debug=False, use_old=True)
+    analyze_test(model_output, gt_sdf, sigma=2, alpha=alpha, debug=True)
+
+    # Visualize comparisons after the test is finished
+    visualize_comparisons(model_output, gt_sdf, surface_masks_dir, normal_dir, debug=True)
+
+
+
