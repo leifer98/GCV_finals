@@ -4,6 +4,7 @@ from skimage import measure, io
 import matplotlib.pyplot as plt
 import cv2
 from scipy.ndimage import label
+from analyze_curves import curve_area, smallest_curve_area
 
 def preprocess_and_count_areas(binary_img, debug=False):
     """
@@ -73,6 +74,52 @@ def save_formatted_curves(input_dir, output_dir, debug=False):
                 np.save(output_path, formatted)
                 if debug:
                     print(f"Saved formatted curves to {output_path}")
+
+def save_formatted_curves_modified(input_dir, output_dir, threshold_factor=0.01, debug=False):
+    """
+    Processes all images in the input directory, extracts and formats contours,
+    filters out small-area curves, and saves the modified formatted curves.
+
+    Args:
+        input_dir (str): Path to the directory containing binary segmentation maps.
+        output_dir (str): Path to the directory to save the formatted curves (overrides existing files).
+        threshold_factor (float): Threshold factor for the smallest curve area (e.g., 0.01 for 1/100).
+        debug (bool): If True, print debug information.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    for filename in os.listdir(input_dir):
+        if filename.endswith(".png"):  # Adjust file extension as needed
+            path = os.path.join(input_dir, filename)
+            binary_img, contours = process_image_extract_curves(path, debug=debug)
+
+            # Calculate area threshold based on image size
+            width, height = binary_img.shape[::-1]
+            area_threshold = (threshold_factor * width) * (threshold_factor * height)
+
+            if debug:
+                print(f"Processing {filename}: width={width}, height={height}, area_threshold={area_threshold:.2f}")
+
+            # Filter out small-area curves
+            filtered_contours = [c for c in contours if curve_area(c) >= area_threshold]
+
+            # Format the filtered contours
+            formatted = format_curves(filtered_contours, binary_img, debug=debug)
+            if formatted:
+                # Verify the smallest curve area meets the threshold
+                smallest_area = smallest_curve_area(filtered_contours)
+                if debug:
+                    print(f"After filtering {filename}: smallest_area={smallest_area:.2f}")
+                assert smallest_area >= area_threshold, (
+                    f"Smallest curve area {smallest_area:.2f} is below the threshold {area_threshold:.2f} in {filename}"
+                )
+
+                # Save the formatted curves (overwriting existing files)
+                output_path = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.npy")
+                np.save(output_path, formatted)
+                if debug:
+                    print(f"Saved modified formatted curves to {output_path}")
 
 def save_visualizations(input_dir, formatted_dir, output_dir, debug=False):
     """
@@ -158,13 +205,14 @@ def visualize_curves_comparison(starting_data_dir, visualization_dir, debug=Fals
         plt.show()
 
 if __name__ == "__main__":
-    input_dir = os.path.join("..", "intermediate_data", "segmaps_filled_holes")  # Updated path
-    formatted_dir = os.path.join("..", "intermediate_data", "curves_formatted")
+    input_dir = os.path.join("..", "intermediate_data", "segmaps_filled_holes")
+    formatted_dir = os.path.join("..", "intermediate_data", "curves_formatted")  # Overwrite this directory
     visualization_dir = os.path.join("..", "intermediate_data", "curves_visualization")
     starting_data_dir = os.path.join("..", "starting_data", "segmaps")
 
-    save_formatted_curves(input_dir, formatted_dir, debug=False)
+    # Use the modified function to save filtered and formatted curves
+    save_formatted_curves_modified(input_dir, formatted_dir, threshold_factor=0.01, debug=False)
     save_visualizations(input_dir, formatted_dir, visualization_dir, debug=False)
-    visualize_curves_comparison(starting_data_dir, visualization_dir, debug=True)
+    visualize_curves_comparison(starting_data_dir, visualization_dir, debug=False)
 
     print("Processing complete.")
