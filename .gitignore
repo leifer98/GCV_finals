@@ -23,3 +23,6 @@ __pycache__/
 
 # Ignore .history directory
 .history/
+
+# Ignore SecondTry/starting_data/example_tcga_slides
+SecondTry/starting_data/example_tcga_slides/
